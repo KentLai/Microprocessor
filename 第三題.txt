@@ -1,0 +1,547 @@
+main:
+ /* Includes ------------------------------------------------------------------------------------------------*/
+#include "ht32.h"
+#include "ht32_board.h"
+#include "ht32_board_config.h"
+
+
+/* Private variables ---------------------------------------------------------------------------------------*/
+TM_TimeBaseInitTypeDef MCTM_TimeBaseInitStructure;
+TM_OutputInitTypeDef MCTM_OutputInitStructure;
+MCTM_CHBRKCTRInitTypeDef MCTM_CHBRKCTRInitStructure;
+
+vu32 guKeyState[3];
+u16 LED = 0xFFFF;
+
+void Delay(u32 cnt) { while(cnt--); } 
+void Key_Process(void);
+
+void CKCU_Configuration(void)
+{
+  CKCU_PeripClockConfig_TypeDef CKCUClock = {{ 0 }};
+  CKCUClock.Bit.AFIO       = 1;
+  CKCUClock.Bit.MCTM0      = 1;                          //  CKCUClock.Bit.MCTM0      = 1;       
+	CKCUClock.Bit.PB = 1;///3week test
+	CKCUClock.Bit.EXTI = 1;
+  CKCU_PeripClockConfig(CKCUClock, ENABLE);
+}
+
+
+void GPIO_Configuration(void)
+{
+  /* Configure MCTM Channel 0 output pin                                                                    */
+  AFIO_GPxConfig(GPIO_PC, AFIO_PIN_1, AFIO_FUN_MCTM_GPTM);
+
+  /* Configure MCTM Break pin                                                                               */
+  AFIO_GPxConfig(GPIO_PB, AFIO_PIN_4, AFIO_FUN_MCTM_GPTM);
+	
+	AFIO_GPxConfig(GPIO_PB, AFIO_PIN_12, AFIO_FUN_GPIO);///week 3 test gpio open B12
+	GPIO_DirectionConfig(HT_GPIOB, GPIO_PIN_12, GPIO_DIR_IN);
+	GPIO_PullResistorConfig(HT_GPIOB, GPIO_PIN_12, GPIO_PR_DISABLE);
+	GPIO_InputConfig(HT_GPIOB, GPIO_PIN_12, ENABLE);///
+}
+
+void MCTM_Configuration(void)
+{
+ /* MCTM Time Base configuration                                                                            */
+  MCTM_TimeBaseInitStructure.CounterReload = HTCFG_MCTM_RELOAD - 1;
+  MCTM_TimeBaseInitStructure.Prescaler = 0;		///?0??4000
+  MCTM_TimeBaseInitStructure.RepetitionCounter = 0;
+  MCTM_TimeBaseInitStructure.CounterMode = TM_CNT_MODE_UP;
+  MCTM_TimeBaseInitStructure.PSCReloadTime = TM_PSC_RLD_IMMEDIATE;
+  TM_TimeBaseInit(HT_MCTM0, &MCTM_TimeBaseInitStructure);
+
+  /* MCTM Channel 0 output configuration                                                                    */
+  MCTM_OutputInitStructure.Channel = TM_CH_0;
+  MCTM_OutputInitStructure.OutputMode = TM_OM_PWM1;
+  MCTM_OutputInitStructure.Control = TM_CHCTL_ENABLE;
+  MCTM_OutputInitStructure.ControlN = TM_CHCTL_ENABLE;
+  MCTM_OutputInitStructure.Polarity = TM_CHP_NONINVERTED;
+  MCTM_OutputInitStructure.PolarityN = TM_CHP_NONINVERTED;
+  MCTM_OutputInitStructure.IdleState = MCTM_OIS_LOW;
+  MCTM_OutputInitStructure.IdleStateN = MCTM_OIS_HIGH;
+	
+  MCTM_OutputInitStructure.Channel = TM_CH_0;
+  MCTM_OutputInitStructure.Compare = HTCFG_MCTM_RELOAD * 1;///?1??1/2
+  TM_OutputInit(HT_MCTM0, &MCTM_OutputInitStructure);
+
+  /* MCTM Off State, lock, Break, Automatic Output enable, dead time configuration                          */
+  MCTM_CHBRKCTRInitStructure.OSSRState = MCTM_OSSR_STATE_ENABLE;
+  MCTM_CHBRKCTRInitStructure.OSSIState = MCTM_OSSI_STATE_ENABLE;
+  MCTM_CHBRKCTRInitStructure.LockLevel = MCTM_LOCK_LEVEL_2;
+  MCTM_CHBRKCTRInitStructure.Break0 = MCTM_BREAK_ENABLE;
+  MCTM_CHBRKCTRInitStructure.Break0Polarity = MCTM_BREAK_POLARITY_LOW;
+  MCTM_CHBRKCTRInitStructure.AutomaticOutput = MCTM_CHAOE_ENABLE;
+  MCTM_CHBRKCTRInitStructure.DeadTime = HTCFG_MCTM_DEAD_TIME;
+  MCTM_CHBRKCTRInitStructure.BreakFilter = 0;
+  MCTM_CHBRKCTRConfig(HT_MCTM0, &MCTM_CHBRKCTRInitStructure);
+
+  /* MCTM counter enable                                                                                    */
+  TM_Cmd(HT_MCTM0, ENABLE);
+
+  /* MCTM Channel Main Output enable                                                                        */
+  MCTM_CHMOECmd(HT_MCTM0, ENABLE);
+}
+void EXTI_configuration(void)
+{
+  EXTI_InitTypeDef EXTI_InitStruct;
+
+  AFIO_EXTISourceConfig(AFIO_EXTI_CH_12, AFIO_ESS_PB);
+  EXTI_InitStruct.EXTI_Channel=EXTI_CHANNEL_12;
+  EXTI_InitStruct.EXTI_Debounce=EXTI_DEBOUNCE_ENABLE;
+  EXTI_InitStruct.EXTI_DebounceCnt=32000;
+  //for 1ms, 1ms*32MHz=32000
+  EXTI_InitStruct.EXTI_IntType=EXTI_POSITIVE_EDGE;
+  EXTI_Init(&EXTI_InitStruct);
+  EXTI_IntConfig(EXTI_CHANNEL_12, ENABLE);
+}
+void NVIC_configuration(void){
+  NVIC_EnableIRQ(EXTI12_IRQn);
+  NVIC_EnableIRQ(EXTI1_IRQn);
+  NVIC_EnableIRQ(EXTI2_IRQn);
+
+  NVIC_SetPriority(EXTI4_15_IRQn, 0);
+  NVIC_SetPriority(EXTI0_1_IRQn, 1);
+  NVIC_SetPriority(EXTI2_3_IRQn, 2);  
+}
+/* Global functions ----------------------------------------------------------------------------------------*/
+/*********************************************************************************************************//**
+  * @brief  Main program.
+  * @retval None
+  ***********************************************************************************************************/
+int main(void)
+{
+  CKCU_Configuration();               /* System Related configuration                                       */
+  GPIO_Configuration();               /* GPIO Related configuration                                         */
+  MCTM_Configuration();
+  EXTI_configuration();
+  NVIC_configuration();
+  while (1)                           /* Infinite loop                                                      */
+  {
+    Key_Process();
+  }
+}	
+void Key_Process(void)
+{
+	int i,j;
+//?????????,guKeyState[0]???TRUE
+  if (guKeyState[0] == TRUE)
+  {
+	//????
+    guKeyState[0] = FALSE;
+		for(i=0;i<255;i++)
+			{
+				MCTM_OutputInitStructure.Channel = TM_CH_0;
+				MCTM_OutputInitStructure.Compare = HTCFG_MCTM_RELOAD *i/255;
+				TM_OutputInit(HT_MCTM0, &MCTM_OutputInitStructure);
+				for(j=0;j<100000;j++);
+			}
+	}
+}
+
+
+
+ht32f5xxxx_01_it.c:
+/*********************************************************************************************************//**
+ * @file    MCTM/ComplementaryOutput/ht32f5xxxx_01_it.c
+ * @version $Rev:: 1704         $
+ * @date    $Date:: 2017-08-17 #$
+ * @brief   This file provides all interrupt service routine.
+ *************************************************************************************************************
+ * @attention
+ *
+ * Firmware Disclaimer Information
+ *
+ * 1. The customer hereby acknowledges and agrees that the program technical documentation, including the
+ *    code, which is supplied by Holtek Semiconductor Inc., (hereinafter referred to as "HOLTEK") is the
+ *    proprietary and confidential intellectual property of HOLTEK, and is protected by copyright law and
+ *    other intellectual property laws.
+ *
+ * 2. The customer hereby acknowledges and agrees that the program technical documentation, including the
+ *    code, is confidential information belonging to HOLTEK, and must not be disclosed to any third parties
+ *    other than HOLTEK and the customer.
+ *
+ * 3. The program technical documentation, including the code, is provided "as is" and for customer reference
+ *    only. After delivery by HOLTEK, the customer shall use the program technical documentation, including
+ *    the code, at their own risk. HOLTEK disclaims any expressed, implied or statutory warranties, including
+ *    the warranties of merchantability, satisfactory quality and fitness for a particular purpose.
+ *
+ * <h2><center>Copyright (C) Holtek Semiconductor Inc. All rights reserved</center></h2>
+ ************************************************************************************************************/
+
+/* Includes ------------------------------------------------------------------------------------------------*/
+#include "ht32.h"
+#include "ht32_board.h"
+
+/** @addtogroup HT32_Series_Peripheral_Examples HT32 Peripheral Examples
+  * @{
+  */
+
+/** @addtogroup MCTM_Examples MCTM
+  * @{
+  */
+
+/** @addtogroup ComplementaryOutput
+  * @{
+  */
+
+
+/* Global functions ----------------------------------------------------------------------------------------*/
+/*********************************************************************************************************//**
+ * @brief   This function handles NMI exception.
+ * @retval  None
+ ************************************************************************************************************/
+void NMI_Handler(void)
+{
+}
+
+/*********************************************************************************************************//**
+ * @brief   This function handles Hard Fault exception.
+ * @retval  None
+ ************************************************************************************************************/
+void HardFault_Handler(void)
+{
+  while (1);
+}
+
+/*********************************************************************************************************//**
+ * @brief   This function handles SVCall exception.
+ * @retval  None
+ ************************************************************************************************************/
+void SVC_Handler(void)
+{
+}
+
+/*********************************************************************************************************//**
+ * @brief   This function handles PendSVC exception.
+ * @retval  None
+ ************************************************************************************************************/
+void PendSV_Handler(void)
+{
+}
+
+/*********************************************************************************************************//**
+ * @brief   This function handles SysTick Handler.
+ * @retval  None
+ ************************************************************************************************************/
+void SysTick_Handler(void)
+{
+}
+
+/*********************************************************************************************************//**
+ * @file    EXTI/GPIO_Interrupt/ht32f5xxxx_01_it.c
+ * @version $Rev:: 2445         $
+ * @date    $Date:: 2017-12-25 #$
+ * @brief   This file provides all interrupt service routine.
+ *************************************************************************************************************
+ * @attention
+ *
+ * Firmware Disclaimer Information
+ *
+ * 1. The customer hereby acknowledges and agrees that the program technical documentation, including the
+ *    code, which is supplied by Holtek Semiconductor Inc., (hereinafter referred to as "HOLTEK") is the
+ *    proprietary and confidential intellectual property of HOLTEK, and is protected by copyright law and
+ *    other intellectual property laws.
+ *
+ * 2. The customer hereby acknowledges and agrees that the program technical documentation, including the
+ *    code, is confidential information belonging to HOLTEK, and must not be disclosed to any third parties
+ *    other than HOLTEK and the customer.
+ *
+ * 3. The program technical documentation, including the code, is provided "as is" and for customer reference
+ *    only. After delivery by HOLTEK, the customer shall use the program technical documentation, including
+ *    the code, at their own risk. HOLTEK disclaims any expressed, implied or statutory warranties, including
+ *    the warranties of merchantability, satisfactory quality and fitness for a particular purpose.
+ *
+ * <h2><center>Copyright (C) Holtek Semiconductor Inc. All rights reserved</center></h2>
+ ************************************************************************************************************/
+
+/* Includes ------------------------------------------------------------------------------------------------*/
+#include "ht32.h"
+#include "ht32_board.h"
+
+/** @addtogroup HT32_Series_Peripheral_Examples HT32 Peripheral Examples
+  * @{
+  */
+
+/** @addtogroup EXTI_Examples EXTI
+  * @{
+  */
+
+/** @addtogroup GPIO_Interrupt
+  * @{
+  */
+
+
+/* Global functions ----------------------------------------------------------------------------------------*/
+/*********************************************************************************************************//**
+ * @brief   This function handles NMI exception.
+ * @retval  None
+ ************************************************************************************************************/
+
+
+/*********************************************************************************************************//**
+ * @brief   This function handles Hard Fault exception.
+ * @retval  None
+ ************************************************************************************************************/
+
+
+/*********************************************************************************************************//**
+ * @brief   This function handles SVCall exception.
+ * @retval  None
+ ************************************************************************************************************/
+
+
+/*********************************************************************************************************//**
+ * @brief   This function handles PendSVC exception.
+ * @retval  None
+ ************************************************************************************************************/
+
+/*********************************************************************************************************//**
+ * @brief   This function handles SysTick Handler.
+ * @retval  None
+ ************************************************************************************************************/
+
+#if defined(USE_HT32F52230_SK)
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 4~15 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI4_15_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get weak-up button status*/
+  if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+  else if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    guKeyState[0] = TRUE;
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+}
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 2~3 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI2_3_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get key1 button status*/
+  if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+    guKeyState[1] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+  }
+}
+#endif
+#if defined(USE_HT32F52241_SK)
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 4~15 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI4_15_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get key2 button status*/
+  if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+    guKeyState[1] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+  }
+  /*Get key2 button status*/
+  if(EXTI_GetEdgeStatus(KEY2_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY2_BUTTON_EXTI_CHANNEL);
+    guKeyState[2] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY2_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY2_BUTTON_EXTI_CHANNEL);
+    
+  }   
+  /*Get weak-up button status*/
+  if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+  else if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    guKeyState[0] = TRUE;
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+}
+#endif
+#if defined(USE_HT32F52341_SK)
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 4~15 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI4_15_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get weak-up button status*/
+  if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+  else if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    guKeyState[0] = TRUE;
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+}
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 0~1 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI0_1_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get key1 button status*/
+  if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+    guKeyState[1] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+  }
+}
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 2~3 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI2_3_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get key2 button status*/
+  if(EXTI_GetEdgeStatus(KEY2_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY2_BUTTON_EXTI_CHANNEL);
+    guKeyState[2] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY2_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY2_BUTTON_EXTI_CHANNEL);
+  }
+}
+#endif
+#if defined(USE_HT32F52352_SK)
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 4~15 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI4_15_IRQHandler(void)                           //////////////////////////////////////////////////
+{
+  int i;	
+  //???main.c????guKeyState
+  extern vu32 guKeyState[3];
+  //?????????? ??????
+  if(EXTI_GetEdgeStatus(EXTI_CHANNEL_12,EXTI_EDGE_POSITIVE))
+  {
+    //EXTI_ClearEdgeFlag(EXTI_CHANNEL_12);
+		guKeyState[0] = TRUE;
+		for(i=0;i<1000000;i++);//10000000
+		EXTI_ClearEdgeFlag(EXTI_CHANNEL_12);
+  }
+}
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 0~1 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI0_1_IRQHandler(void)
+{
+
+}
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 2~3 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI2_3_IRQHandler(void)
+{
+
+}
+#endif
+
+#if defined(USE_HT32F50230_SK) || defined(USE_HT32F50241_SK) || defined(USE_HT32F0008_SK)
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 2~3 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI2_3_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+    guKeyState[1] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY1_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY1_BUTTON_EXTI_CHANNEL);
+  }
+
+  if(EXTI_GetEdgeStatus(KEY2_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY2_BUTTON_EXTI_CHANNEL);
+    guKeyState[2] = TRUE;
+  }
+  else if(EXTI_GetEdgeStatus(KEY2_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    EXTI_ClearEdgeFlag(KEY2_BUTTON_EXTI_CHANNEL);
+  }
+}
+/*********************************************************************************************************//**
+ * @brief   This function handles EXIT line 4~15 interrupt.
+ * @retval  None
+ ************************************************************************************************************/
+void EXTI4_15_IRQHandler(void)
+{
+  extern vu32 guKeyState[3];
+  /*Get weak-up button status*/
+  if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_NEGATIVE))
+  {
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+  else if(EXTI_GetEdgeStatus(WAKEUP_BUTTON_EXTI_CHANNEL,EXTI_EDGE_POSITIVE))
+  {
+    guKeyState[0] = TRUE;
+    EXTI_ClearEdgeFlag(WAKEUP_BUTTON_EXTI_CHANNEL);
+  }
+}
+#endif
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+
+
